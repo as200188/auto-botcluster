@@ -378,9 +378,9 @@ if __name__ == "__main__":
             botcluster = BotCluster(hadoop_path=args.hadoop_path, botcluster_path=args.botcluster_path)
             botcluster.run(netflow_name=args.netflow_name)
             merge_part_session_all(hadoop_path=args.hadoop_path,
-                                    output_file_path=args.output_dir_path+"session_all")
+                                    output_file_path=args.output_dir_path+"/session_all")
             merge_part_session_benign(hadoop_path=args.hadoop_path,
-                                    output_file_path=args.output_dir_path+"session_benign")
+                                    output_file_path=args.output_dir_path+"/session_benign")
             clust_info = ClustInfo(hadoop_path=args.hadoop_path, mongo_ip=args.mongo_ip)
             all_sessions_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
             benign_session_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
