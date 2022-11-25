@@ -201,7 +201,7 @@ class ClustInfo:
 
 def benign_session_to_dataset(clust_info, output_dir_path):
     benign_session_path=output_dir_path+"/session_benign" 
-    benign_dataset_path=output_dir_path+"/dataset_benign.csv"
+    benign_dataset_path=output_dir_path+"/benign_dataset.csv"
 
 
     print("============ start session_benign_to_dataset =================")
@@ -228,10 +228,12 @@ def benign_session_to_dataset(clust_info, output_dir_path):
             has_classification = False
             features = line.split("\t")
             ip_feature = features[2].split(">")
-            src_ip = ip_feature[0].split(":")[0]
-            src_port = ip_feature[0].split(":")[1]
-            dst_ip = ip_feature[1].split(":")[0]
-            dst_port = ip_feature[1].split(":")[1]
+            src_info = ip_feature[0].split(":")
+            dst_info = ip_feature[1].split(":")
+            src_ip = src_info[0]
+            src_port = src_info[1]
+            dst_ip = dst_info[0]
+            dst_port = dst_info[1]
             write_str = features[1]+","+src_ip+","+src_port+","+dst_ip+","+dst_port
             for i in range(3, 24):
                 write_str = write_str+","+features[i]
@@ -296,8 +298,8 @@ def all_sessions_to_dataset(clust_info, output_dir_path):
             src_port = src_info[1]
             dst_ip = dst_info[0]
             dst_port = dst_info[1]
-
             write_str = features[1]+","+src_ip+","+src_port+","+dst_ip+","+dst_port
+
             for i in range(3, 24):
                 write_str = write_str+","+features[i]
 
