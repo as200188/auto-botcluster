@@ -43,7 +43,7 @@ class BotnetDataGetter:
         if self.api_key_list == None:
             raise Execption("Error, API_KEYS is None.")
     def change_api_key(self):
-        self.api_key_index = int((self.api_key_index+1)/len(api_key_list))
+        self.api_key_index = int((self.api_key_index+1)%len(self.api_key_list))
         self.api_key = self.api_key_list[self.api_key_index]
         if self.api_key_index == 0:
             print("Call API has reached upper limit, please wait 600 sec.")
