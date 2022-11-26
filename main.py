@@ -97,7 +97,7 @@ class BotCluster():
         # no merge, timestamp and pcapInitialTime is any.
         time_stamp = 115929039790
         pcapInitialTime = "2019-03-01_11:59:29.039"
-        
+        start = timeit.default_timer()
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.MergeLog -D pcapInitialTime="+pcapInitialTime+" -D \
             netflowTime="+str(time_stamp)+" emptyfile "+netflow_name+" /user/hpds/output/merge_out")
@@ -128,6 +128,8 @@ class BotCluster():
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.GetGroupIPs -D mapred.reduce.tasks=1 /user/hpds/fvidmapping \
             /user/hpds/output/ip_out")
+        end = timeit.default_timer()
+        print("Botcluster Duration:{} sec".format(end-start))
 
 class ClustInfo:
     def __init__(self, hadoop_path, mongo_ip):
