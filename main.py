@@ -23,22 +23,28 @@ class Tester:
 
 
 class BotnetDataGetter:
-    def __init__(self, mongo_ip):
-        self.api_key = "043773ec3264cbaad6e34e718de63598c9c33662a6a51047d6556484cb6184dd"
+    def __init__(self):
+        self.api_key = None
+        self.api_key_list = []
         self.api_key_index = 0
-        self.mongo_ip = mongo_ip
+        self.set_api_keys()
+        self.mongo_ip = None
+        self.set_mongo_ip()
         self.client = pymongo.MongoClient("mongodb://"+self.mongo_ip+":27017/")
         self.botnet_db = self.client["botnet_db"]
         self.botnet_db_col = self.botnet_db["ip_info"]
-
         return
-    
+    def set_mongo_ip(self):
+        self.mongo_ip = os.getenv("MONGO_IP")
+        if self.mongo_ip == None:
+            raise Execption("Error, MONGO_IP is None.")
+    def set_api_keys(self):
+        self.api_key_list = os.getenv("API_KEYS").split(",")
+        if self.api_key_list == None:
+            raise Execption("Error, API_KEYS is None.")
     def change_api_key(self):
-        api_key_list = ["043773ec3264cbaad6e34e718de63598c9c33662a6a51047d6556484cb6184dd",
-        "0299d81dc47dea8fe459649d7d13f5df39d2709b8bb3d54b5fb23503064a5559",
-        "39f24d86d38a080845b882740459dbe67c68c1284c40b12c63b4924d2363ac62"]
         self.api_key_index = int((self.api_key_index+1)/len(api_key_list))
-        self.api_key = api_key_list[self.api_key_index]
+        self.api_key = self.api_key_list[self.api_key_index]
         if self.api_key_index == 0:
             print("Call API has reached upper limit, please wait 600 sec.")
             time.sleep(600)
@@ -82,9 +88,21 @@ class BotnetDataGetter:
         return res
 
 class BotCluster():
-    def __init__(self, hadoop_path, botcluster_path):
-        self.hadoop_path = hadoop_path
-        self.botcluster_path = botcluster_path
+    def __init__(self):
+        self.hadoop_path = None
+        self.set_hadoop_path()
+        self.botcluster_path = None
+        self.set_botcluster_path()
+        
+    def set_hadoop_path(self):
+        self.hadoop_path = os.getenv("HADOOP_HOME")
+        if self.hadoop_path == None:
+            raise Execption("Error, HADOOP_HOME is None.")
+    def set_botcluster_path(self):
+        botcluster2_home = os.getenv("BOTCLUSTER2_HOME")
+        if botcluster2_home == None:
+            raise Execption("Error, BOTCLUSTER2_HOME is None.")
+        self.botcluster_path = botcluster2_home+"/target/BotCluster2-1.1.jar"
 
     def run(self, netflow_name, tcptime=21000, udptime=22000, flow_loss_ratio=0.225,
             l1Distance=3, l1MinPts=5, srcMinPts=3, dstMinPts=3, srcDistance=1.3,
@@ -132,7 +150,16 @@ class BotCluster():
         print("Botcluster Duration:{} sec".format(end-start))
 
 class ClustInfo:
-    def __init__(self, hadoop_path, mongo_ip):
+    def __init__(self):
+        self.hadoop_path = None
+        set_hadoop_path()
+        
+    def set_hadoop_path(self):
+        self.hadoop_path = os.getenv("HADOOP_HOME")
+        if self.hadoop_path == None:
+            raise Execption("Error, HADOOP_HOME is None.")
+        
+    def run(self):
         process = os.popen(hadoop_path+"/bin/hdfs dfs -cat /user/hpds/fvidmapping/fvidIPMapping-0")
         lines = process.readlines()
         process.close()
@@ -140,7 +167,7 @@ class ClustInfo:
         self.sus_ip_set = set()
         self.rm_ip_set = set()
         self.mal_group_list = []
-        bdg = BotnetDataGetter(mongo_ip=mongo_ip)
+        bdg = BotnetDataGetter()
         ip_info_search_count = 0
         total_ip_count = 0
         malicious_group_count = 0
@@ -356,60 +383,55 @@ if __name__ == "__main__":
     #hadoop_path=/hadoop/hadoop-2.10.1
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--verbose", help="show current version", action="store_true")
-    parser.add_argument("-hp", "--hadoop_path", help="must to enter hadoop path")
-    parser.add_argument("-bp", "--botcluster_path", help="must to enter botcluster path")
     parser.add_argument("-nf", "--netflow_name", help="must to enter netflow filename")
-    parser.add_argument("-k", "--api_key", help="must to enter api key")
     parser.add_argument("-run", "--run_botcluster", help="exec botcluster", action="store_true")
     parser.add_argument("-od", "--output_dir_path", help="output dir")
     parser.add_argument("-stod", "--session_to_dataset", help="output session to dataset", action="store_true")
     parser.add_argument("-run_all", "--run_all", help="exec botcluster and get dataset", action="store_true")
     parser.add_argument("--test", help="test auto botcluster", action="store_true")
-    parser.add_argument("--mongo_ip", help="must to enter mongodb ip address")
     args = parser.parse_args()
 
     if args.test:
-        if args.mongo_ip == None:
-            print("Error: Need to use --mongo_ip")
-        else:
-            tester = Tester(mongo_ip=args.mongo_ip)
+            tester = Tester(mongo_ip=os.getenv("MONGO_IP"))
             tester.test()
     if args.verbose:
-        print("version: 1.1")
+        print("version: 1.6.2")
 
     if args.run_all:
-        if args.hadoop_path and args.botcluster_path and args.netflow_name and args.output_dir_path and args.mongo_ip:
-            botcluster = BotCluster(hadoop_path=args.hadoop_path, botcluster_path=args.botcluster_path)
+        if args.netflow_name and args.output_dir_path:
+            botcluster = BotCluster()
             botcluster.run(netflow_name=args.netflow_name)
-            merge_part_session_all(hadoop_path=args.hadoop_path,
+            merge_part_session_all(hadoop_path=os.getenv("HADOOP_HOME"),
                                     output_file_path=args.output_dir_path+"/session_all")
-            merge_part_session_benign(hadoop_path=args.hadoop_path,
+            merge_part_session_benign(hadoop_path=os.getenv("HADOOP_HOME"),
                                     output_file_path=args.output_dir_path+"/session_benign")
-            clust_info = ClustInfo(hadoop_path=args.hadoop_path, mongo_ip=args.mongo_ip)
+            clust_info = ClustInfo()
+            clust_info.run()
             all_sessions_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
             benign_session_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
         else:
-            print("use -hp -bp -nf to enter path and filename or use -h to get help.")
+            print("use -nf -od to enter path and filename or use -h to get help.")
 
     if args.run_botcluster:
-        if args.hadoop_path and args.botcluster_path and args.netflow_name:
-            botcluster = BotCluster(hadoop_path=args.hadoop_path, botcluster_path=args.botcluster_path)
+        if args.netflow_name:
+            botcluster = BotCluster()
             botcluster.run(netflow_name=args.netflow_name)
         else:
-            print("use -hp -bp -nf -od to enter path and filename or use -h to get help.")
+            print("use -nf or use -h to get help.")
 
 
     if args.session_to_dataset:
-        if args.hadoop_path and args.output_dir_path and args.mongo_ip:
-            merge_part_session_all(hadoop_path=args.hadoop_path,
+        if args.output_dir_path:
+            merge_part_session_all(hadoop_path=os.getenv("HADOOP_HOME"),
                                     output_file_path=args.output_dir_path+"/session_all")
-            merge_part_session_benign(hadoop_path=args.hadoop_path,
+            merge_part_session_benign(hadoop_path=os.getenv("HADOOP_HOME"),
                                     output_file_path=args.output_dir_path+"/session_benign")
-            clust_info = ClustInfo(hadoop_path=args.hadoop_path, mongo_ip=args.mongo_ip)
+            clust_info = ClustInfo()
+            clust_info.run()
             all_sessions_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
             benign_session_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
         else:
-            print("use -hp -od --mongo_ip to enter path and filename or use -h to get help.")
+            print("use -od to enter path and filename or use -h to get help.")
 
 
     print("Exec done.")
