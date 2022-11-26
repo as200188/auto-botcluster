@@ -160,7 +160,7 @@ class ClustInfo:
             raise Execption("Error, HADOOP_HOME is None.")
         
     def run(self):
-        process = os.popen(hadoop_path+"/bin/hdfs dfs -cat /user/hpds/fvidmapping/fvidIPMapping-0")
+        process = os.popen(self.hadoop_path+"/bin/hdfs dfs -cat /user/hpds/fvidmapping/fvidIPMapping-0")
         lines = process.readlines()
         process.close()
         print("Number of group:{}".format(len(lines)))
