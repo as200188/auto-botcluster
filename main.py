@@ -152,7 +152,7 @@ class BotCluster():
 class ClustInfo:
     def __init__(self):
         self.hadoop_path = None
-        set_hadoop_path()
+        self.set_hadoop_path()
         
     def set_hadoop_path(self):
         self.hadoop_path = os.getenv("HADOOP_HOME")
