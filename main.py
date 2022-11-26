@@ -147,7 +147,7 @@ class BotCluster():
         " fbicloud.botrank.GetGroupIPs -D mapred.reduce.tasks=1 /user/hpds/fvidmapping \
             /user/hpds/output/ip_out")
         end = timeit.default_timer()
-        print("Botcluster Duration:{} sec".format(end-start))
+        print("Botcluster Duration:{:.1f} sec".format(end-start))
 
 class ClustInfo:
     def __init__(self):
@@ -287,7 +287,7 @@ def benign_session_to_dataset(clust_info, output_dir_path):
     benign_file.close()
     end = timeit.default_timer()
     print("============ end session_benign_to_dataset =================")
-    print("Duration:{} sec".format(end-start))
+    print("Duration:{:.1f} sec".format(end-start))
 
 def all_sessions_to_dataset(clust_info, output_dir_path):
     all_session_path=output_dir_path+"/session_all" 
@@ -357,7 +357,7 @@ def all_sessions_to_dataset(clust_info, output_dir_path):
     remove_file.close()
     end = timeit.default_timer()
     print("============  end sessions_all_to_dataset  =================")
-    print("Duration:{} sec".format(end-start))
+    print("Duration:{:.1f} sec".format(end-start))
 
 def merge_part_session_all(hadoop_path, output_file_path):
     # you must to execute run_botcluster()
@@ -366,7 +366,7 @@ def merge_part_session_all(hadoop_path, output_file_path):
     os.system(hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter1_out/* "+output_file_path)
     end = timeit.default_timer()
     print("============  end merge_part_session_all  =================")
-    print("Duration:{} sec".format(end-start))
+    print("Duration:{:.1f} sec".format(end-start))
 
 def merge_part_session_benign(hadoop_path, output_file_path):
     # you must to execute run_botcluster()
@@ -375,7 +375,7 @@ def merge_part_session_benign(hadoop_path, output_file_path):
     os.system(hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter2_out/* "+output_file_path)
     end = timeit.default_timer()
     print("============  end merge_part_session_benign  =================")
-    print("Duration:{} sec".format(end-start))
+    print("Duration:{:.1f} sec".format(end-start))
 
 
 if __name__ == "__main__":
