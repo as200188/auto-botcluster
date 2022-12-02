@@ -7,6 +7,7 @@ import datetime
 from random import sample
 import timeit
 import argparse
+import pandas as pd
 
 class Tester:
     def __init__(self, mongo_ip):
@@ -33,7 +34,15 @@ class BotnetDataGetter:
         self.client = pymongo.MongoClient("mongodb://"+self.mongo_ip+":27017/")
         self.botnet_db = self.client["botnet_db"]
         self.botnet_db_col = self.botnet_db["ip_info"]
-        return
+        self.custom_ip_info_path = None
+        self.ip_info_dict = None
+        self.set_custom_ip_info()
+    def set_custom_ip_info(self):
+        self.custom_ip_info_path = os.getenv("CUSTOM_IP_INFO_PATH")
+        if self.custom_ip_info_path == None:
+            raise Execption("Error, CUSTOM_IP_INFO_PATH is None.")
+        df = pd.read_csv(self.custom_ip_info_path)
+        self.ip_info_dict = df.set_index("IP").T.to_dict()
     def set_mongo_ip(self):
         self.mongo_ip = os.getenv("MONGO_IP")
         if self.mongo_ip == None:
@@ -77,10 +86,18 @@ class BotnetDataGetter:
             return ip_info["data"]["attributes"]["last_analysis_stats"]["malicious"]
         else:
             return -1
+ 
+    def get_ip_malicious_from_dict(self, ip):
+        try:
+            return self.ip_info_dict[ip]["Malicious Report"]
+        except Exception as e:
+            return -1
 
     def get_ip_malicious(self, ip):
         # Return number of malicious tag.
-        res = self.get_ip_malicious_from_db(ip)
+        res = self.get_ip_malicious_from_dict(ip)
+        if(res == -1):
+            res = self.get_ip_malicious_from_db(ip)
         if(res == -1):
             #print("from virus total")
             res = self.get_ip_malicious_from_virustotal(ip)
