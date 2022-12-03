@@ -110,7 +110,13 @@ class BotCluster():
         self.set_hadoop_path()
         self.botcluster_path = None
         self.set_botcluster_path()
+        self.datahome = None
+        self.set_datahome()
         
+    def set_datahome(self):
+        self.datahome = os.getenv("DATA_HOME")
+        if self.datahome == None:
+            raise Execption("Error, DATA_HOME is None.")
     def set_hadoop_path(self):
         self.hadoop_path = os.getenv("HADOOP_HOME")
         if self.hadoop_path == None:
@@ -163,6 +169,10 @@ class BotCluster():
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.GetGroupIPs -D mapred.reduce.tasks=1 /user/hpds/fvidmapping \
             /user/hpds/output/ip_out")
+        
+        # Download file to datahome/output from hdfs
+        os.system(self.hadoop_path+"/bin/hdfs dfs -get /user/hpds/output/ip_out/part-r-00000 "+self.datahome+"/output/botcluster_malicious_ip")
+        
         end = timeit.default_timer()
         print("Botcluster Duration:{:.1f} sec".format(end-start))
 
@@ -393,7 +403,21 @@ def merge_part_session_benign(hadoop_path, output_file_path):
     end = timeit.default_timer()
     print("============  end merge_part_session_benign  =================")
     print("Duration:{:.1f} sec".format(end-start))
-
+def save_auto_botcluster_resault_to_file(clust_info):
+    datahome = os.getenv("DATA_HOME")
+    if datahome == None:
+        raise Execption("Error, DATA_HOME is None.")
+    mal_group_list = clust_info.get_malicious_groups()
+    ip_set = set()
+    
+    for mal_group in mal_group_list:
+        for ip in mal_group:
+            if ip not in ip_set:
+                ip_set.add(ip)
+    with open(datahome+"/output/auto_botcluster_malicious_ip", "w") as file:
+        for ip in ip_set:
+            file.write(ip+"\n")
+        
 
 if __name__ == "__main__":
     #exampe:
@@ -412,7 +436,7 @@ if __name__ == "__main__":
             tester = Tester(mongo_ip=os.getenv("MONGO_IP"))
             tester.test()
     if args.verbose:
-        print("version: 1.6.2")
+        print("version: 1.6.4")
 
     if args.run_all:
         if args.netflow_name and args.output_dir_path:
@@ -426,6 +450,7 @@ if __name__ == "__main__":
             clust_info.run()
             all_sessions_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
             benign_session_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
+            save_auto_botcluster_resault_to_file(clust_info=clust_info)
         else:
             print("use -nf -od to enter path and filename or use -h to get help.")
 
