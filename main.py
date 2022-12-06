@@ -57,7 +57,6 @@ class BotnetDataGetter:
         if self.api_key_index == 0:
             print("Call API has reached upper limit, please wait 600 sec.")
             time.sleep(600)
-    
     def get_ip_malicious_from_virustotal(self, ip):
         # IP is string. For example, check_ip_info_from_virustotal("173.189.167.21").
         # Return number of malicious tag.
@@ -76,7 +75,6 @@ class BotnetDataGetter:
                 return res
             except Exception as e:
                 self.change_api_key()
-                
         return -1
 
     def get_ip_malicious_from_db(self, ip):
@@ -86,7 +84,7 @@ class BotnetDataGetter:
             return ip_info["data"]["attributes"]["last_analysis_stats"]["malicious"]
         else:
             return -1
- 
+
     def get_ip_malicious_from_dict(self, ip):
         try:
             return self.ip_info_dict[ip]["Malicious Report"]
@@ -106,13 +104,25 @@ class BotnetDataGetter:
 
 class BotCluster():
     def __init__(self):
-        self.hadoop_path = None
         self.set_hadoop_path()
-        self.botcluster_path = None
         self.set_botcluster_path()
-        self.datahome = None
         self.set_datahome()
-        
+        self.set_botcluster_conf()
+
+    def set_botcluster_conf(self):
+        conf = None
+        with open(self.datahome+"/input/botcluster.conf", "r") as file:
+            conf = json.load(file)
+        self.tcptime=conf["session"]["tcptime"]
+        self.udptime=conf["session"]["udptime"]
+        self.flow_loss_ratio=conf["session"]["flow_loss_ratio"]
+        self.l1Distance=conf["group1"]["l1Distance"]
+        self.l1MinPts=conf["group1"]["l1MinPts"]
+        self.srcMinPts=conf["group23"]["srcMinPts"]
+        self.dstMinPts=conf["group23"]["dstMinPts"]
+        self.srcDistance=conf["group23"]["srcDistance"]
+        self.dstDistance=conf["group23"]["dstDistance"]
+        self.mapreduce_job=conf["hadoop"]["mapreduce_job"]
     def set_datahome(self):
         self.datahome = os.getenv("DATA_HOME")
         if self.datahome == None:
@@ -127,12 +137,10 @@ class BotCluster():
             raise Execption("Error, BOTCLUSTER2_HOME is None.")
         self.botcluster_path = botcluster2_home+"/target/BotCluster2-1.1.jar"
 
-    def run(self, netflow_name, tcptime=21000, udptime=22000, flow_loss_ratio=0.225,
-            l1Distance=3, l1MinPts=5, srcMinPts=3, dstMinPts=3, srcDistance=1.3,
-            dstDistance=4, mapreduce_job=15):
+    def run(self, netflow_name):
         # netflow_input_file_path = /user/shino/<filename>
         # tcptime, udptime unit are micro second.
-        
+
         os.system(self.hadoop_path+"/bin/hdfs dfs -rm -r /user/hpds/*")
 
         # no merge, timestamp and pcapInitialTime is any.
@@ -144,35 +152,32 @@ class BotCluster():
             netflowTime="+str(time_stamp)+" emptyfile "+netflow_name+" /user/hpds/output/merge_out")
         # filter 1
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
-        " fbicloud.botrank.FilterPhase1MR -D filterdomain=false -D tcptime="+str(tcptime)+" -D \
-            udptime="+str(udptime)+" -D mapreduce.job.reduces="+str(mapreduce_job)+" /user/hpds/output/merge_out \
+        " fbicloud.botrank.FilterPhase1MR -D filterdomain=false -D tcptime="+str(self.tcptime)+" -D \
+            udptime="+str(self.udptime)+" -D mapreduce.job.reduces="+str(self.mapreduce_job)+" /user/hpds/output/merge_out \
                 /user/hpds/output/filter1_out")
 
         # filter 2
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
-        " fbicloud.botrank.FilterPhase2MR -D flowlossratio="+str(flow_loss_ratio)+" -D \
-            mapreduce.job.reduces="+str(mapreduce_job)+" /user/hpds/output/filter1_out \
+        " fbicloud.botrank.FilterPhase2MR -D flowlossratio="+str(self.flow_loss_ratio)+" -D \
+            mapreduce.job.reduces="+str(self.mapreduce_job)+" /user/hpds/output/filter1_out \
                 /user/hpds/output/filter2_out")
 
         # group 1
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
-        " ncku.hpds.botcluster.Group1MR -D l1Distance="+str(l1Distance)+" -D l1MinPts="+str(l1MinPts)+" \
+        " ncku.hpds.botcluster.Group1MR -D l1Distance="+str(self.l1Distance)+" -D l1MinPts="+str(self.l1MinPts)+" \
             /user/hpds/output/filter2_out /user/hpds/output/group1_out")
 
         # group 23
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
-              " ncku.hpds.botcluster.Group23MR -D srcMinPts="+str(srcMinPts)+" -D dstMinPts="+str(dstMinPts)+" -D \
-                srcDistance="+str(srcDistance)+" -D dstDistance="+str(dstDistance)+" /user/hpds/output/group1_out \
+              " ncku.hpds.botcluster.Group23MR -D srcMinPts="+str(self.srcMinPts)+" -D dstMinPts="+str(self.dstMinPts)+" -D \
+                srcDistance="+str(self.srcDistance)+" -D dstDistance="+str(self.dstDistance)+" /user/hpds/output/group1_out \
                     /user/hpds/output/group2_out fvidmapping")
-        
         # GetGroupIPs
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.GetGroupIPs -D mapred.reduce.tasks=1 /user/hpds/fvidmapping \
             /user/hpds/output/ip_out")
-        
         # Download file to datahome/output from hdfs
-        os.system(self.hadoop_path+"/bin/hdfs dfs -get /user/hpds/output/ip_out/part-r-00000 "+self.datahome+"/output/botcluster_malicious_ip")
-        
+        os.system(self.hadoop_path+"/bin/hdfs dfs -get -f /user/hpds/output/ip_out/part-r-00000 "+self.datahome+"/output/botcluster_malicious_ip")
         end = timeit.default_timer()
         print("Botcluster Duration:{:.1f} sec".format(end-start))
 
