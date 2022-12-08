@@ -177,26 +177,24 @@ class BotCluster():
         " fbicloud.botrank.GetGroupIPs -D mapred.reduce.tasks=1 /user/hpds/fvidmapping \
             /user/hpds/output/ip_out")
         # Download file to datahome/output from hdfs
-        os.system(self.hadoop_path+"/bin/hdfs dfs -get -f /user/hpds/output/ip_out/part-r-00000 "+self.datahome+"/output/botcluster_malicious_ip")
+        os.system(self.hadoop_path+"/bin/hdfs dfs -get -f /user/hpds/output/ip_out/part-r-00000 "+self.datahome+"/output/botcluster_malicious_ip.txt")
         end = timeit.default_timer()
         print("Botcluster Duration:{:.1f} sec".format(end-start))
 
 class ClustInfo:
     def __init__(self):
-        self.hadoop_path = None
         self.set_hadoop_path()
-        
+
     def set_hadoop_path(self):
         self.hadoop_path = os.getenv("HADOOP_HOME")
         if self.hadoop_path == None:
             raise Execption("Error, HADOOP_HOME is None.")
-        
     def run(self):
         process = os.popen(self.hadoop_path+"/bin/hdfs dfs -cat /user/hpds/fvidmapping/fvidIPMapping-0")
         lines = process.readlines()
         process.close()
         print("Number of group:{}".format(len(lines)))
-        self.sus_ip_set = set()
+        self.mal_ip_set = set()
         self.rm_ip_set = set()
         self.mal_group_list = []
         bdg = BotnetDataGetter()
@@ -204,7 +202,7 @@ class ClustInfo:
         total_ip_count = 0
         malicious_group_count = 0
         for line in lines:
-            cur_sus_ip_set = set()
+            cur_mal_ip_set = set()
             line_arr = line.split("\t")
             group_id = line_arr[0].split("-")[1]
             ip_arr = line_arr[1].split(",")
@@ -223,11 +221,11 @@ class ClustInfo:
                     break
             if is_malicious_group:
                 for ip in ip_arr:
-                    if not ip in self.sus_ip_set:
-                        self.sus_ip_set.add(ip)
-                    if not ip in cur_sus_ip_set:
-                        cur_sus_ip_set.add(ip)
-                self.mal_group_list.append(cur_sus_ip_set)
+                    if not ip in self.mal_ip_set:
+                        self.mal_ip_set.add(ip)
+                    if not ip in cur_mal_ip_set:
+                        cur_mal_ip_set.add(ip)
+                self.mal_group_list.append(cur_mal_ip_set)
             else:
                 for ip in ip_arr:
                     if not ip in self.rm_ip_set:
@@ -236,19 +234,19 @@ class ClustInfo:
         print("Number of malicious group:{}".format(malicious_group_count))
 
         # remove overlapped area
-        for ip in self.sus_ip_set:
+        for ip in self.mal_ip_set:
             if ip in self.rm_ip_set:
                 self.rm_ip_set.remove(ip)
 
         print("Number of remove IP: {}".format(len(self.rm_ip_set)))
-        print("Number of suspicious IP: {}".format(len(self.sus_ip_set)))
+        print("Number of malicious IP: {}".format(len(self.mal_ip_set)))
         print("Number of total IP:{}".format(total_ip_count))
         print("Number of search IP:{}".format(ip_info_search_count))
 
     def get_malicious_groups(self):
         return self.mal_group_list
-    def get_suspicious_ip_set(self):
-        return self.sus_ip_set
+    def get_malicious_ip_set(self):
+        return self.mal_ip_set
     def get_remove_ip_set(self):
         return self.rm_ip_set
     def get_sample_size(self, total_sample, z = 1.96, p = 0.5, c = 0.034):
@@ -365,11 +363,18 @@ def all_sessions_to_dataset(clust_info, output_dir_path):
                 write_str = write_str+","+features[i]
 
             for mal_group in mal_group_list:
-                if src_ip in mal_group and dst_ip in mal_group:
-                    malicious_file.write(write_str+"\n")
-                    malicious_session_count += 1
-                    has_classification = True
-                    break
+                if len(mal_group) == 1:
+                    if src_ip in mal_group:
+                        malicious_file.write(write_str+"\n")
+                        malicious_session_count += 1
+                        has_classification = True
+                        break
+                else:
+                    if src_ip in mal_group and dst_ip in mal_group:
+                        malicious_file.write(write_str+"\n")
+                        malicious_session_count += 1
+                        has_classification = True
+                        break
             if not has_classification:
                 if src_ip in rm_ip_set or dst_ip in rm_ip_set:
                     remove_file.write(write_str+"\n")
@@ -412,17 +417,11 @@ def save_auto_botcluster_resault_to_file(clust_info):
     datahome = os.getenv("DATA_HOME")
     if datahome == None:
         raise Execption("Error, DATA_HOME is None.")
-    mal_group_list = clust_info.get_malicious_groups()
-    ip_set = set()
-    
-    for mal_group in mal_group_list:
-        for ip in mal_group:
-            if ip not in ip_set:
-                ip_set.add(ip)
-    with open(datahome+"/output/auto_botcluster_malicious_ip", "w") as file:
-        for ip in ip_set:
-            file.write(ip+"\n")
-        
+    mal_ip_set = clust_info.get_malicious_ip_set()
+
+    with open(datahome+"/output/auto_botcluster_malicious_ip.txt", "w") as file:
+        for ip in mal_ip_set:
+            file.write(ip+"\n") 
 
 if __name__ == "__main__":
     #exampe:
