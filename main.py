@@ -14,7 +14,7 @@ class Tester:
         self.mongo_ip = mongo_ip
         return
     def test(self):
-        self.testMongodbConnection()
+        bdg =  BotnetDataGetter()
     def testMongodbConnection(self):
         try:
             self.client = pymongo.MongoClient("mongodb://"+self.mongo_ip+":27017/")
@@ -28,18 +28,26 @@ class BotnetDataGetter:
         self.api_key = None
         self.api_key_list = []
         self.api_key_index = 0
-        self.set_api_keys()
         self.mongo_ip = None
         self.set_mongo_ip()
         self.client = pymongo.MongoClient("mongodb://"+self.mongo_ip+":27017/")
         self.botnet_db = self.client["botnet_db"]
         self.botnet_db_col = self.botnet_db["ip_info"]
+        self.botnet_db_api_keys = self.botnet_db["api_kyes"]
+        self.set_api_key_list_from_db()
         self.custom_ip_info_path = None
         self.ip_info_dict = None
         self.set_custom_ip_info()
         self.database_search_count = 0
         self.api_search_count = 0
         self.dict_search_count = 0
+    def insert_api_key_to_db(self, api_key):
+        data = {"key":api_key}
+        self.botnet_db_api_keys.insert_one(data)
+    def set_api_key_list_from_db(self):
+        cursor = self.botnet_db_api_keys.find({})
+        for data in cursor:
+            self.api_key_list.append(data["key"])
     def set_custom_ip_info(self):
         self.custom_ip_info_path = os.getenv("CUSTOM_IP_INFO_PATH")
         if self.custom_ip_info_path == None:
@@ -164,17 +172,21 @@ class BotCluster():
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.MergeLog -D pcapInitialTime="+pcapInitialTime+" -D \
             netflowTime="+str(time_stamp)+" emptyfile "+netflow_name+" /user/hpds/output/merge_out")
-        # filter 1
+        # filter 1, Netflows to sessions.
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.FilterPhase1MR -D filterdomain=false -D tcptime="+str(self.tcptime)+" -D \
             udptime="+str(self.udptime)+" -D mapreduce.job.reduces="+str(self.mapreduce_job)+" /user/hpds/output/merge_out \
                 /user/hpds/output/filter1_out")
-
+        # Download All Sessions
+        os.system(self.hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter1_out/* "+self.datahome+"/output/All_Sessions.txt")
         # filter 2
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
         " fbicloud.botrank.FilterPhase2MR -D flowlossratio="+str(self.flow_loss_ratio)+" -D \
             mapreduce.job.reduces="+str(self.mapreduce_job)+" /user/hpds/output/filter1_out \
                 /user/hpds/output/filter2_out")
+        # Download FLR_IPs
+        os.system(self.hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter2_out_job2_FLR/LowFLR/* "+self.datahome+"/output/Low_FLR_IPs.txt")
+        os.system(self.hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter2_out_job2_FLR/HighFLR/* "+self.datahome+"/output/High_FLR_IPs.txt")
 
         # group 1
         os.system(self.hadoop_path+"/bin/hadoop jar "+self.botcluster_path+
@@ -195,10 +207,192 @@ class BotCluster():
         end = timeit.default_timer()
         print("Botcluster Duration:{:.1f} sec".format(end-start))
 
-class ClustInfo:
+class Auto_BotCluster:
     def __init__(self):
+        self.hadoop_path = None
         self.set_hadoop_path()
+        self.sample_size = None
+        self.malicious_report_threshold = None
+        self.eps = None
+        self.min_samples = None
+        self.algorithm = None
+        self.leaf_size = None
         self.set_conf()
+        self.mal_ip_set = set()
+        self.rm_ip_set = set()
+        self.mal_group_list = []
+        self.bdg = BotnetDataGetter()
+        self.set_mal_ip_set_and_rm_ip_set_and_mal_group_list()
+        self.high_flr_ip_set = set()
+        self.set_high_flr_ip_set()
+        self.feature_names = None
+# ================         process malicious and benign session         ===============
+    def run(self):
+        self.output_all_session_to_all_dataset()
+        self.output_all_dataset_to_high_and_low_flr_dataset()
+        self.output_malicious_dataset()
+        self.output_benign_dataset()
+        self.output_malicious_dataset_cleaned()
+    def output_malicious_dataset_cleaned(self):
+        print("============== Clean Malicious Dataset ===================")
+        chunk_size = self.sample_size
+        loop_done = False
+        reader = pd.read_csv("data/output/malicious_dataset.csv", chunksize=chunk_size)
+        malicious_session_cleaned_file = open("data/output/malicious_dataset_cleaned.csv", "w")
+        malicious_session_cleaned_file.write(self.feature_names)
+        feature_names = ["Protocol", "SrcIP", "SrcPort", "DstIP", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
+                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
+                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
+                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
+                "Total_BytesTransferRatio", "Duration", "Loss"]
+        sel_feature_names = ["Protocol", "SrcPort", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
+                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
+                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
+                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
+                "Total_BytesTransferRatio", "Duration", "Loss"]
+
+        while(not loop_done):
+            all_session = pd.DataFrame(reader.get_chunk(), columns=feature_names)
+            all_session_processed = all_session[sel_feature_names]
+            subset_sessions = pd.DataFrame(all_session_processed, columns=all_session_processed.columns)
+            try:
+                db = DBSCAN(eps=self.eps, min_samples=self.min_samples, algorithm=self.algorithm, leaf_size=self.leaf_size, n_jobs=-1).fit(subset_sessions.values)
+
+                if len(all_session_processed) < chunk_size:
+                    loop_done = True
+
+                labels = db.labels_
+                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                n_noise = list(labels).count(-1)
+                print("Number of clusters:{}".format(n_clusters))
+                print("Number of noise:{}".format(n_noise))
+                subset_sessions.insert(1, "SrcIP", all_session.loc[subset_sessions.index, "SrcIP"])
+                subset_sessions.insert(3, "DstIP", all_session.loc[subset_sessions.index, "DstIP"])
+                subset_sessions.insert(len(subset_sessions.columns), "Label", labels)
+                subset_sessions_rm_noise = subset_sessions[subset_sessions.Label != -1]
+                subset_sessions_sorted = subset_sessions_rm_noise.sort_values(by=["Label"])
+                for session in subset_sessions_sorted.values:
+                    write_str = ""
+                    src_ip = session[1]
+                    dst_ip = session[3]
+                    write_str = str(session[0])
+                    for i in range(1, len(session)-1):
+                        write_str = write_str+","+str(session[i])
+                    malicious_session_cleaned_file.write(write_str+"\n")
+            except:
+               break
+        malicious_session_cleaned_file.close()
+    def output_benign_dataset(self):
+        chunk_size = 10000
+        reader = pd.read_csv("data/output/low_flr_session_dataset.csv", chunksize=chunk_size)
+        loop_done = False
+        benign_session_file = open("data/output/benign_dataset.csv", "w")
+        benign_session_file.write(self.feature_names)
+
+        while(not loop_done):
+            all_session = pd.DataFrame(reader.get_chunk())
+            if len(all_session) < chunk_size:
+                loop_done = True
+            for session in all_session.values:
+                write_str = ""
+                src_ip = session[1]
+                dst_ip = session[3]
+                write_str = str(session[0])
+                for i in range(1, len(session)):
+                    write_str = write_str+","+str(session[i])
+                if src_ip not in self.mal_ip_set and dst_ip not in self.mal_ip_set:
+                    if src_ip not in self.rm_ip_set and dst_ip not in self.rm_ip_set:
+                        benign_session_file.write(write_str+"\n")
+        benign_session_file.close()
+    def output_malicious_dataset(self):
+        chunk_size = 10000
+        reader = pd.read_csv("data/output/high_flr_session_dataset.csv", chunksize=chunk_size)
+        loop_done = False
+        malicious_session_file = open("data/output/malicious_dataset.csv", "w")
+        malicious_session_file.write(self.feature_names)
+
+        while(not loop_done):
+            all_session = pd.DataFrame(reader.get_chunk())
+            if len(all_session) < chunk_size:
+                loop_done = True
+            for session in all_session.values:
+                write_str = ""
+                src_ip = session[1]
+                dst_ip = session[3]
+                write_str = str(session[0])
+                for i in range(1, len(session)):
+                    write_str = write_str+","+str(session[i])
+                for mal_group in self.mal_group_list:
+                    if len(mal_group) == 1:
+                       if src_ip in mal_group or dst_ip in mal_group:
+                           malicious_session_file.write(write_str+"\n")
+                           break
+                    elif src_ip in mal_group and dst_ip in mal_group:
+                        malicious_session_file.write(write_str+"\n")
+                        break
+        malicious_session_file.close()
+    def output_all_session_to_all_dataset(self):
+        self.feature_names = "Protocol,SrcIP,SrcPort,DstIP,DstPort,SrcToDst_NumOfPkts,"
+        self.feature_names += "SrcToDst_NumOfBytes,SrcToDst_Byte_Max,SrcToDst_Byte_Min,SrcToDst_Byte_Mean,"
+        self.feature_names += "DstToSrc_NumOfPkts,DstToSrc_NumOfBytes,DstToSrc_Byte_Max,DstToSrc_Byte_Min,"
+        self.feature_names += "DstToSrc_Byte_Mean,Total_NumOfPkts,Total_NumOfBytes,Total_Byte_Max,"
+        self.feature_names += "Total_Byte_Min,Total_Byte_Mean,Total_Byte_STD,Total_PktsRate,"
+        self.feature_names += "Total_BytesRate,Total_BytesTransferRatio,Duration,Loss\n"
+        all_session_file = open("data/output/all_session_dataset.csv", "w")
+        all_session_file.write(self.feature_names)
+        with open("data/output/All_Sessions.txt", "r") as session_file:
+            line = session_file.readline()
+            while line is not None and line != "":
+                features = line.split("\t")
+                ip_feature = features[2].split(">")
+                src_info = ip_feature[0].split(":")
+                dst_info = ip_feature[1].split(":")
+                src_ip = src_info[0]
+                src_port = src_info[1]
+                dst_ip = dst_info[0]
+                dst_port = dst_info[1]
+                write_str = features[1]+","+src_ip+","+src_port+","+dst_ip+","+dst_port
+
+                for i in range(3, 24):
+                    write_str = write_str+","+features[i]
+
+                all_session_file.write(write_str+"\n")
+                line = session_file.readline()
+        all_session_file.close()
+    def output_all_dataset_to_high_and_low_flr_dataset(self):
+        chunk_size = 10000
+        reader = pd.read_csv("data/output/all_session_dataset.csv", chunksize=chunk_size)
+        loop_done = False
+        high_flr_session_file = open("data/output/high_flr_session_dataset.csv", "w")
+        high_flr_session_file.write(self.feature_names)
+        low_flr_session_file = open("data/output/low_flr_session_dataset.csv", "w")
+        low_flr_session_file.write(self.feature_names)
+        while(not loop_done):
+            all_session = pd.DataFrame(reader.get_chunk())
+            if len(all_session) < chunk_size:
+                loop_done = True
+            for session in all_session.values:
+                write_str = ""
+                src_ip = session[1]
+                dst_ip = session[3]
+                write_str = str(session[0])
+                for i in range(1, len(session)):
+                    write_str = write_str+","+str(session[i])
+                if src_ip in self.high_flr_ip_set or dst_ip in self.high_flr_ip_set:
+                    high_flr_session_file.write(write_str+"\n")
+                else:
+                    low_flr_session_file.write(write_str+"\n")
+        high_flr_session_file.close()
+        low_flr_session_file.close()
+# ================         set self.variable                            ===============
+    def set_high_flr_ip_set(self):
+        with open("data/output/High_FLR_IPs.txt", "r") as file:
+            lines = file.readlines()
+            for line in lines:
+                data = line.split()
+                ip = data[0]
+                if ip not in self.high_flr_ip_set:
+                    self.high_flr_ip_set.add(ip)
     def set_conf(self):
         with open("data/input/auto_botcluster.conf", "r") as file:
             conf = json.load(file)
@@ -213,15 +407,13 @@ class ClustInfo:
         self.hadoop_path = os.getenv("HADOOP_HOME")
         if self.hadoop_path == None:
             raise Execption("Error, HADOOP_HOME is None.")
-    def run(self):
+    def set_mal_ip_set_and_rm_ip_set_and_mal_group_list(self):
+        print("=============   Check Malicious Group Using Database and Virustotal API  ===============")
         process = os.popen(self.hadoop_path+"/bin/hdfs dfs -cat /user/hpds/fvidmapping/fvidIPMapping-0")
         lines = process.readlines()
         process.close()
         print("Number of group:{}".format(len(lines)))
-        self.mal_ip_set = set()
-        self.rm_ip_set = set()
-        self.mal_group_list = []
-        bdg = BotnetDataGetter()
+        bdg = self.bdg
         ip_info_search_count = 0
         total_ip_count = 0
         malicious_group_count = 0
@@ -271,247 +463,8 @@ class ClustInfo:
         print("Number of dictionary search:{}".format(bdg.get_dict_search_count()))
     def get_malicious_groups(self):
         return self.mal_group_list
-    def clean_benign_sessions(self):
-        print("============== Clean Benign Dataset ===================")
-        start = timeit.default_timer()
-        bdg = BotnetDataGetter()
-        self.benign_sessions = []
-        self.benign_ip_set = set()
-        feature_names = ["Protocol", "SrcPort", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-        "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-        "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-        "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-        "Total_BytesTransferRatio", "Duration", "Loss"]
-        sample_size = self.sample_size
-        loop_done = False
-        reader = pd.read_csv("data/output/benign_dataset.csv", chunksize=1)
-        all_session = pd.DataFrame(reader.get_chunk())
-        column_names = all_session.columns
-        reader = pd.read_csv("data/output/benign_dataset.csv", chunksize=sample_size)
-        while(not loop_done):
-            all_session = pd.DataFrame(reader.get_chunk(), columns=column_names)
-            all_session_processed = all_session[feature_names]
-            subset_sessions = pd.DataFrame(all_session_processed, columns=all_session_processed.columns)
-            db = DBSCAN(eps=self.eps, min_samples=self.min_samples, algorithm=self.algorithm, leaf_size=self.leaf_size, n_jobs=-1).fit(subset_sessions.values)
-
-            if len(all_session_processed) < sample_size:
-                loop_done = True
-
-            labels = db.labels_
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            print("Number of clusters:{}".format(n_clusters))
-            print("Number of noise:{}".format(n_noise))
-            subset_sessions.insert(1, "SrcIP", all_session.loc[subset_sessions.index, "SrcIP"])
-            subset_sessions.insert(3, "DstIP", all_session.loc[subset_sessions.index, "DstIP"])
-            subset_sessions.insert(len(subset_sessions.columns), "Label", labels)
-            subset_sessions_noise = subset_sessions[subset_sessions.Label == -1]
-            subset_sessions_noise = subset_sessions_noise.drop("Label", axis=1)
-            for session in subset_sessions_noise.values:
-                src_ip = session[1]
-                dst_ip = session[3]
-                if src_ip not in self.benign_ip_set:
-                    self.benign_ip_set.add(src_ip)
-                if dst_ip not in self.benign_ip_set:
-                    self.benign_ip_set.add(dst_ip)
-                if (src_ip not in self.mal_ip_set) and (dst_ip not in self.mal_ip_set):
-                    if (src_ip not in self.rm_ip_set) and (dst_ip not in self.rm_ip_set):
-                        self.benign_sessions.append(session)
-
-        print("Number of benign session:{}".format(len(self.benign_sessions)))
-        end = timeit.default_timer()
-        print("Duration:{:.1f} sec".format(end-start))
-        print("===============================================")
-    def clean_malicious_sessions(self):
-        print("============== Experiment P2P DBSCAN ===================")
-        start = timeit.default_timer()
-        bdg = BotnetDataGetter()
-        feature_names = ["Protocol", "SrcPort", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-        sample_size = self.sample_size
-        loop_done = False
-        self.malicious_sessions = []
-        mal_group_count = 0
-        reader = pd.read_csv("data/output/malicious_dataset.csv", chunksize=1)
-        all_session = pd.DataFrame(reader.get_chunk())
-        column_names = all_session.columns
-        reader = pd.read_csv("data/output/malicious_dataset.csv", chunksize=sample_size)
-        while(not loop_done):
-            all_session = pd.DataFrame(reader.get_chunk(), columns=column_names)
-            all_session_processed = all_session[feature_names]
-            subset_sessions = pd.DataFrame(all_session_processed, columns=all_session_processed.columns)
-            db = DBSCAN(eps=self.eps, min_samples=self.min_samples, algorithm=self.algorithm, leaf_size=self.leaf_size, n_jobs=-1).fit(subset_sessions.values)
-
-            if len(all_session_processed) < sample_size:
-                loop_done = True
-
-            labels = db.labels_
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            print("Number of clusters:{}".format(n_clusters))
-            print("Number of noise:{}".format(n_noise))
-            subset_sessions.insert(1, "SrcIP", all_session.loc[subset_sessions.index, "SrcIP"])
-            subset_sessions.insert(3, "DstIP", all_session.loc[subset_sessions.index, "DstIP"])
-            subset_sessions.insert(len(subset_sessions.columns), "Label", labels)
-            subset_sessions_rm_noise = subset_sessions[subset_sessions.Label != -1]
-            subset_sessions_sortted = subset_sessions_rm_noise.sort_values(by=["Label"])
-
-            major = 0
-            tmp_group = []
-            groups = []
-            group_id = 0
-
-            for session in subset_sessions_sortted.values:
-                if session[26] == major:
-                    tmp_group.append(session[:26])
-                else:
-                    major = session[26]
-                    groups.append(tmp_group)
-                    tmp_group = []
-                    tmp_group.append(session[:26])
-            groups.append(tmp_group)
-
-            for group in groups:
-                group_size = len(group)
-                #print("Group ID:{}".format(group_id))
-                group_id += 1
-                #print("Group size:{}".format(group_size))
-                #for session in group:
-                #    src_ip = session[1]
-                #    dst_ip = session[3]
-                #    if src_ip not in self.mal_ip_set:
-                #        self.mal_ip_set.add(src_ip)
-                self.malicious_sessions.extend(group)
-
-        end = timeit.default_timer()
-        print("Number of malicious session:{}".format(len(self.malicious_sessions)))
-        print("Duration:{:.1f} sec".format(end-start))
-        print("===============================================")
-    def clustering_malicious_sessions_and_p2p_malicious_sessions(self):
-        print("============== Experiment DBSCAN ===================")
-        start = timeit.default_timer()
-        bdg = BotnetDataGetter()
-        feature_names = ["Protocol", "SrcPort", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-        sample_size = self.sample_size
-        loop_done = False
-        self.mal_exp_set = set()
-        self.p2p_mal_exp_set = set()
-        self.malicious_sessions = []
-        self.p2p_malicious_sessions = []
-        mal_group_count = 0
-        reader = pd.read_csv("data/output/all_session_dataset.csv", chunksize=1)
-        all_session = pd.DataFrame(reader.get_chunk())
-        column_names = all_session.columns
-        reader = pd.read_csv("data/output/all_session_dataset.csv", chunksize=sample_size)
-        while(not loop_done):
-            all_session = pd.DataFrame(reader.get_chunk(), columns=column_names)
-            all_session_processed = all_session[feature_names]
-            subset_sessions = pd.DataFrame(all_session_processed, columns=all_session_processed.columns)
-            db = DBSCAN(eps=self.eps, min_samples=self.min_samples, algorithm=self.algorithm, leaf_size=self.leaf_size, n_jobs=-1).fit(subset_sessions.values)
-
-            if len(all_session_processed) < sample_size:
-                loop_done = True
-
-            labels = db.labels_
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            print("Number of clusters:{}".format(n_clusters))
-            print("Number of noise:{}".format(n_noise))
-            subset_sessions.insert(1, "SrcIP", all_session.loc[subset_sessions.index, "SrcIP"])
-            subset_sessions.insert(3, "DstIP", all_session.loc[subset_sessions.index, "DstIP"])
-            subset_sessions.insert(len(subset_sessions.columns), "Label", labels)
-            subset_sessions_rm_noise = subset_sessions[subset_sessions.Label != -1]
-            subset_sessions_sortted = subset_sessions_rm_noise.sort_values(by=["Label"])
-
-            major = 0
-            tmp_group = []
-            groups = []
-            group_id = 0
-
-            for session in subset_sessions_sortted.values:
-                if session[26] == major:
-                    tmp_group.append(session[:26])
-                else:
-                    major = session[26]
-                    groups.append(tmp_group)
-                    tmp_group = []
-                    tmp_group.append(session[:26])
-            groups.append(tmp_group)
-
-            for group in groups:
-                print("group ID:{}".format(group_id))
-                group_id += 1
-                group_size = len(group)
-                print("group size:{}".format(group_size))
-                sample_group = sample(group, self.get_sample_size(total_sample=group_size))
-                mal_count = 0
-                no_report_count = 0
-
-                for session in sample_group:
-                    src_ip = session[1]
-                    dst_ip = session[3]
-                    res = bdg.get_ip_malicious(src_ip)
-                    if res < self.malicious_report_threshold:
-                        res = max(res, bdg.get_ip_malicious(dst_ip))
-                    if res >= self.malicious_report_threshold:
-                        mal_count += 1
-                        if(mal_count/len(sample_group)) >= self.malicious_ratio:
-                            break
-                    else:
-                        no_report_count += 1
-                        if(no_report_count/len(sample_group)) >= (1-self.malicious_ratio):
-                            break
-
-                if len(sample_group) != 0:
-                    if (mal_count/len(sample_group)) >= self.malicious_ratio:
-                        mal_group_count += 1
-                        self.malicious_sessions.extend(group)
-                        for session in group:
-                            src_ip = session[1]
-                            if src_ip not in self.mal_exp_set:
-                                self.mal_exp_set.add(src_ip)
-
-            for session in self.malicious_sessions:
-                src_ip = session[1]
-                for mal_group in self.mal_group_list:
-                    if src_ip in mal_group:
-                        self.p2p_malicious_sessions.append(session)
-                        if src_ip not in self.p2p_mal_exp_set:
-                            self.p2p_mal_exp_set.add(src_ip)
-                        break
-
-        end = timeit.default_timer()
-        print("Number of malicious group:{}".format(mal_group_count))
-        print("Number of malicious session:{}".format(len(self.malicious_sessions)))
-        print("Number of p2p malicious session:{}".format(len(self.p2p_malicious_sessions)))
-        print("Number of API search:{}".format(bdg.get_api_search_count()))
-        print("Number of database search:{}".format(bdg.get_database_search_count()))
-        print("Number of dictionary search:{}".format(bdg.get_dict_search_count()))
-        print("Duration:{:.1f} sec".format(end-start))
-        print("===============================================")
-    def get_malicious_sessions(self):
-        return self.malicious_sessions
-    def get_benign_sessions(self):
-        return self.benign_sessions
-    def get_malicious_exp(self):
-        return self.malicious_sessions, self.p2p_malicious_sessions
-    def get_benign_exp(self):
-        return self.benign_sessions
-    def get_mal_exp_set(self):
-        return self.mal_exp_set
-    def get_p2p_mal_exp_set(self):
-        return self.p2p_mal_exp_set
     def get_malicious_ip_set(self):
         return self.mal_ip_set
-    def get_benign_ip_set(self):
-        return self.benign_ip_set
     def get_remove_ip_set(self):
         return self.rm_ip_set
     def get_sample_size(self, total_sample, z = 1.96, p = 0.5, c = 0.034):
@@ -524,203 +477,6 @@ class ClustInfo:
         new_ss = ss/(1+((ss-1)/total_sample)) # new sample size
         return (int)(new_ss+0.5)
 
-def benign_session_to_dataset(clust_info, output_dir_path):
-    benign_session_path=output_dir_path+"/session_benign"
-    benign_dataset_path=output_dir_path+"/benign_dataset.csv"
-
-
-    print("================ session_benign_to_dataset =================")
-    start = timeit.default_timer()
-    feature_names = "Protocol,SrcIP,SrcPort,DstIP,DstPort,SrcToDst_NumOfPkts,"
-    feature_names += "SrcToDst_NumOfBytes,SrcToDst_Byte_Max,SrcToDst_Byte_Min,SrcToDst_Byte_Mean,"
-    feature_names += "DstToSrc_NumOfPkts,DstToSrc_NumOfBytes,DstToSrc_Byte_Max,DstToSrc_Byte_Min,"
-    feature_names += "DstToSrc_Byte_Mean,Total_NumOfPkts,Total_NumOfBytes,Total_Byte_Max,"
-    feature_names += "Total_Byte_Min,Total_Byte_Mean,Total_Byte_STD,Total_PktsRate,"
-    feature_names += "Total_BytesRate,Total_BytesTransferRatio,Duration,Loss\n"
-    rm_ip_set = clust_info.get_remove_ip_set()
-    mal_ip_set = clust_info.get_malicious_ip_set()
-    benign_file = open(benign_dataset_path, "w")
-    benign_file.write(feature_names)
-
-    benign_session_count = 0
-    malicious_session_count = 0
-    remove_session_count = 0
-
-    with open(benign_session_path, "r") as session_file:
-        line = session_file.readline()
-        while line is not None and line != "":
-            has_classification = False
-            features = line.split("\t")
-            ip_feature = features[2].split(">")
-            src_info = ip_feature[0].split(":")
-            dst_info = ip_feature[1].split(":")
-            src_ip = src_info[0]
-            src_port = src_info[1]
-            dst_ip = dst_info[0]
-            dst_port = dst_info[1]
-            write_str = features[1]+","+src_ip+","+src_port+","+dst_ip+","+dst_port
-            for i in range(3, 24):
-                write_str = write_str+","+features[i]
-            if src_ip in mal_ip_set or dst_ip in mal_ip_set:
-                malicious_session_count += 1
-            else:
-                benign_file.write(write_str+"\n")
-                benign_session_count += 1
-
-            line = session_file.readline()
-
-    print("Number of malicious session:{}".format(malicious_session_count))
-    print("Number of benign session:{}".format(benign_session_count))
-    benign_file.close()
-    end = timeit.default_timer()
-    print("Duration:{:.1f} sec".format(end-start))
-    print("=============================================================")
-def ben_exp_session_to_dataset(clust_info, output_dir_path):
-    feature_names = ["Protocol", "SrcIP", "SrcPort", "DstIP", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-
-    clust_info.clean_benign_dataset()
-    benign_sessions = clust_info.get_benign_exp()
-
-    df = pd.DataFrame(benign_sessions, columns=feature_names)
-    df.to_csv(output_dir_path+"/benign_exp_dataset.csv", index=False)
-
-def clean_ben_sessions(clust_info, output_dir_path):
-    feature_names = ["Protocol", "SrcIP", "SrcPort", "DstIP", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-
-    clust_info.clean_benign_sessions()
-    mal_sessions = clust_info.get_benign_sessions()
-
-    df = pd.DataFrame(mal_sessions, columns=feature_names)
-    df.to_csv(output_dir_path+"/benign_dataset_cleaned.csv", index=False)
-
-def clean_mal_sessions(clust_info, output_dir_path):
-    feature_names = ["Protocol", "SrcIP", "SrcPort", "DstIP", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-
-    clust_info.clean_malicious_sessions()
-    mal_sessions = clust_info.get_malicious_sessions()
-
-    df = pd.DataFrame(mal_sessions, columns=feature_names)
-    df.to_csv(output_dir_path+"/malicious_dataset_cleaned.csv", index=False)
-def mal_exp_session_to_dataset(clust_info, output_dir_path):
-    feature_names = ["Protocol", "SrcIP", "SrcPort", "DstIP", "DstPort", "SrcToDst_NumOfPkts", "SrcToDst_NumOfBytes", "SrcToDst_Byte_Max",
-                "SrcToDst_Byte_Min", "SrcToDst_Byte_Mean", "DstToSrc_NumOfPkts", "DstToSrc_NumOfBytes", "DstToSrc_Byte_Max",
-                "DstToSrc_Byte_Min", "DstToSrc_Byte_Mean", "Total_NumOfPkts", "Total_NumOfBytes", "Total_Byte_Max",
-                "Total_Byte_Min", "Total_Byte_Mean", "Total_Byte_STD", "Total_PktsRate", "Total_BytesRate",
-                "Total_BytesTransferRatio", "Duration", "Loss"]
-
-    clust_info.clustering_malicious_sessions_and_p2p_malicious_sessions()
-    mal_exp_sessions, p2p_mal_exp_sessions = clust_info.get_malicious_exp()
-
-    mal_exp_df = pd.DataFrame(mal_exp_sessions, columns=feature_names)
-    p2p_mal_exp_df = pd.DataFrame(p2p_mal_exp_sessions, columns=feature_names)
-    mal_exp_df.to_csv(output_dir_path+"/malicious_exp_dataset.csv", index=False)
-    p2p_mal_exp_df.to_csv(output_dir_path+"/p2p_malicious_exp_dataset.csv", index=False)
-def all_sessions_to_dataset(clust_info, output_dir_path):
-    all_session_path=output_dir_path+"/session_all"
-
-    print("============ start sessions_all_to_dataset =================")
-    start = timeit.default_timer()
-
-    rm_ip_set = clust_info.get_remove_ip_set()
-    mal_group_list = clust_info.get_malicious_groups()
-    all_session_count = 0
-    unknown_session_count = 0
-    malicious_session_count = 0
-    remove_session_count = 0
-    all_session_file = open(output_dir_path+"/all_session_dataset.csv", "w")
-    malicious_file = open(output_dir_path+"/malicious_dataset.csv", "w")
-
-    feature_names = "Protocol,SrcIP,SrcPort,DstIP,DstPort,SrcToDst_NumOfPkts,"
-    feature_names += "SrcToDst_NumOfBytes,SrcToDst_Byte_Max,SrcToDst_Byte_Min,SrcToDst_Byte_Mean,"
-    feature_names += "DstToSrc_NumOfPkts,DstToSrc_NumOfBytes,DstToSrc_Byte_Max,DstToSrc_Byte_Min,"
-    feature_names += "DstToSrc_Byte_Mean,Total_NumOfPkts,Total_NumOfBytes,Total_Byte_Max,"
-    feature_names += "Total_Byte_Min,Total_Byte_Mean,Total_Byte_STD,Total_PktsRate,"
-    feature_names += "Total_BytesRate,Total_BytesTransferRatio,Duration,Loss\n"
-
-    all_session_file.write(feature_names)
-    malicious_file.write(feature_names)
-
-    with open(all_session_path, "r") as session_file:
-        line = session_file.readline()
-        while line is not None and line != "":
-            has_classification = False
-            features = line.split("\t")
-            ip_feature = features[2].split(">")
-            src_info = ip_feature[0].split(":")
-            dst_info = ip_feature[1].split(":")
-            src_ip = src_info[0]
-            src_port = src_info[1]
-            dst_ip = dst_info[0]
-            dst_port = dst_info[1]
-            write_str = features[1]+","+src_ip+","+src_port+","+dst_ip+","+dst_port
-
-            for i in range(3, 24):
-                write_str = write_str+","+features[i]
-
-            all_session_file.write(write_str+"\n")
-            all_session_count += 1
-            for mal_group in mal_group_list:
-                if len(mal_group) == 1:
-                    if src_ip in mal_group:
-                        malicious_file.write(write_str+"\n")
-                        malicious_session_count += 1
-                        has_classification = True
-                        break
-                else:
-                    if src_ip in mal_group and dst_ip in mal_group:
-                        malicious_file.write(write_str+"\n")
-                        malicious_session_count += 1
-                        has_classification = True
-                        break
-
-            if not has_classification:
-                if src_ip in rm_ip_set or dst_ip in rm_ip_set:
-                    remove_session_count += 1
-                else:
-                    unknown_session_count += 1
-
-            line = session_file.readline()
-
-        print("Number of all session:{}".format(all_session_count))
-        print("Number of malicious session:{}".format(malicious_session_count))
-        print("Number of remove session:{}".format(remove_session_count))
-        print("Number of unknown session:{}".format(unknown_session_count))
-
-    all_session_file.close()
-    malicious_file.close()
-    end = timeit.default_timer()
-    print("============  end sessions_all_to_dataset  =================")
-    print("Duration:{:.1f} sec".format(end-start))
-
-def merge_part_session_all(hadoop_path, output_file_path):
-    # you must to execute run_botcluster()
-    print("============== merge_part_session_all =================")
-    start = timeit.default_timer()
-    os.system(hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter1_out/* "+output_file_path)
-    end = timeit.default_timer()
-    print("Duration:{:.1f} sec".format(end-start))
-    print("=======================================================")
-
-def merge_part_session_benign(hadoop_path, output_file_path):
-    # you must to execute run_botcluster()
-    print("=============== merge_part_session_benign =================")
-    start = timeit.default_timer()
-    os.system(hadoop_path+"/bin/hdfs dfs -getmerge /user/hpds/output/filter2_out/* "+output_file_path)
-    end = timeit.default_timer()
-    print("Duration:{:.1f} sec".format(end-start))
-    print("============================================================")
 def save_auto_botcluster_resault_to_file(clust_info):
     datahome = os.getenv("DATA_HOME")
     if datahome == None:
@@ -756,23 +512,14 @@ if __name__ == "__main__":
             tester = Tester(mongo_ip=os.getenv("MONGO_IP"))
             tester.test()
     if args.verbose:
-        print("version: 1.6.6")
+        print("version: 1.7.4")
 
     if args.run_all:
         if args.netflow_name and args.output_dir_path:
             botcluster = BotCluster()
             botcluster.run(netflow_name=args.netflow_name)
-            merge_part_session_all(hadoop_path=os.getenv("HADOOP_HOME"),
-                                    output_file_path=args.output_dir_path+"/session_all")
-            merge_part_session_benign(hadoop_path=os.getenv("HADOOP_HOME"),
-                                    output_file_path=args.output_dir_path+"/session_benign")
-            clust_info = ClustInfo()
-            clust_info.run()
-            all_sessions_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
-            clean_mal_sessions(clust_info=clust_info, output_dir_path=args.output_dir_path)
-            benign_session_to_dataset(clust_info=clust_info, output_dir_path=args.output_dir_path)
-            clean_ben_sessions(clust_info=clust_info, output_dir_path=args.output_dir_path)
-            save_auto_botcluster_resault_to_file(clust_info=clust_info)
+            auto_botcluster = Auto_BotCluster()
+            auto_botcluster.run()
         else:
             print("use -nf -od to enter path and filename or use -h to get help.")
 
